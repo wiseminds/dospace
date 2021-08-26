@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 import 'package:meta/meta.dart';
 import 'package:crypto/crypto.dart';
@@ -109,7 +110,7 @@ class Bucket extends Client {
 
   /// Uploads file. Returns Etag.
   Future<String?> uploadFile(
-      String key, dynamic file, String contentType, Permissions permissions,
+      String key, File file, String contentType, Permissions permissions,
       {Map<String, String>? meta}) async {
     int? contentLength = await file.length();
     Digest contentSha256 = await sha256.bind(file.openRead()).first;
