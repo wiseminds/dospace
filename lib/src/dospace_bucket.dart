@@ -2,10 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:dio/dio.dart';
 import 'package:meta/meta.dart';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:xml/xml.dart' as xml;
+import 'package:http_parser/http_parser.dart';
 
 import 'dospace_client.dart';
 import 'dospace_results.dart';
@@ -109,7 +111,7 @@ class Bucket extends Client {
   }
 
   /// Uploads file. Returns Etag.
-  Future<String?> uploadFile(
+  Future<String?> uploadFile2(
       String key, File file, String contentType, Permissions permissions,
       {Map<String, String>? meta}) async {
     int? contentLength = await file.length();
@@ -118,8 +120,14 @@ class Bucket extends Client {
     http.StreamedRequest request =
         new http.StreamedRequest('PUT', Uri.parse(uriStr));
     Stream<List<int>> stream = file.openRead();
-    stream.listen(request.sink.add,
-        onError: request.sink.addError, onDone: request.sink.close);
+    int bytes = 0;
+    final total = await file.length();
+    stream.listen((val) {
+      bytes += val.length;
+      print('total: $total, bytes: $bytes, ${bytes / total}');
+      request.sink.add(val);
+    }, onError: request.sink.addError, onDone: request.sink.close);
+
     if (meta != null) {
       for (MapEntry<String, String> me in meta.entries) {
         request.headers["x-amz-meta-${me.key}"] = me.value;
@@ -134,11 +142,112 @@ class Bucket extends Client {
     http.StreamedResponse response = await httpClient.send(request);
     String body = await utf8.decodeStream(response.stream);
     if (response.statusCode != 200) {
-      throw new ClientException(
-          response.statusCode, response.reasonPhrase ??'', response.headers, body);
+      throw new ClientException(response.statusCode,
+          response.reasonPhrase ?? '', response.headers, body);
     }
+    print(response.request?.headers);
     String? etag = response.headers['etag'];
     return etag;
+  }
+
+  /// Uploads file. Returns Etag.
+  Future<String?> uploadFile(
+      String key, File file, String contentType, Permissions permissions,
+      {Map<String, String>? meta,
+      Function(double progress)? onProgress}) async {
+    int? contentLength = await file.length();
+    Digest contentSha256 = await sha256.bind(file.openRead()).first;
+    // String uriStr = key;
+    // endpointUrl + '/' +
+    var _dio = Dio(BaseOptions(baseUrl: endpointUrl));
+    Map<String, dynamic> _queryParameters = {};
+    Map<String, String> _headers = {};
+
+    // http.StreamedRequest request =
+    //     new http.StreamedRequest('PUT', Uri.parse(uriStr));
+    // Stream<List<int>> stream = file.openRead();
+    // int length = await file.length();
+    // stream.listen((a) {
+    //   print(DateTime.now());
+    //   print(a.length / length);
+    //   request.sink.add(a);
+    // }, onError: request.sink.addError, onDone: request.sink.close);
+
+    if (meta != null) {
+      for (MapEntry<String, String> me in meta.entries) {
+        // request.headers["x-amz-meta-${me.key}"] = me.value;
+        _headers["x-amz-meta-${me.key}"] = me.value;
+      }
+    }
+    if (permissions == Permissions.public) {
+      //   request.headers['x-amz-acl'] = 'public-read';
+      _headers['x-amz-acl'] = 'public-read';
+    }
+    // request.headers['Content-Length'] = contentLength.toString();
+    // request.headers['Content-Type'] = contentType;
+    _headers['Content-Length'] = contentLength.toString();
+    _headers['Content-Type'] = contentType;
+//  content-length;content-type;host;x-amz-acl;x-amz-content-sha256;x-amz-date
+    // print('signing request');
+    var params = signRequestDio('PUT', Uri.parse(endpointUrl + '/$key'),
+        headers: _headers,
+        contentSha256: contentSha256
+        );
+
+    _queryParameters.addAll(params['queryParameters']);
+    _headers.addAll(params['headers']);
+
+    // _queryParameters.addAll({'uploads': ''});
+
+    //     var formData = FormData.fromMap({
+    //   'file': await MultipartFile.fromFile(file.path),
+    // });
+    // print(await file.exists());
+    // print(_headers);
+
+    try {
+      var response = await _dio.put(
+        '/$key',
+        queryParameters: _queryParameters,
+        options: Options(
+          headers: _headers,
+          contentType: contentType,
+        ),
+        data: await file.readAsBytes(),
+        // data: FormData.fromMap({
+        //   'file': await MultipartFile.fromFile(file.path,
+        //       filename: key, contentType: MediaType.parse(contentType)),
+        // }),
+        onSendProgress: (int sent, int total) {
+          print('$sent $total, ${sent / total}');
+        },
+      );
+      // print(response.headers);
+      String? etag = response.headers.value('etag');
+      return etag;
+    } on DioError catch (e) {
+      print(e.response?.requestOptions.headers);
+      print(e.response?.requestOptions.uri);
+      print(e.response?.requestOptions.data);
+      throw ClientException(
+          e.response?.statusCode ?? 500,
+          e.response?.statusMessage ?? '',
+          e.response?.headers.map
+                  .map((key, value) => MapEntry(key, value[0])) ??
+              <String, String>{},
+          e.response?.data);
+    }
+    // print('uploading');
+
+    // http.StreamedResponse response = await httpClient.send(request);
+    // response.stream.listen((a) {
+    //   print(a);
+    // });
+    // String body = await utf8.decodeStream(response.stream);
+    // if (response.statusCode != 200) {
+    //   throw new ClientException(response.statusCode,
+    //       response.reasonPhrase ?? '', response.headers, body);
+    // }
   }
 
   /// Uploads data from memory. Returns Etag.
@@ -166,8 +275,8 @@ class Bucket extends Client {
     String body =
         await utf8.decodeStream(response.stream); // Should be empty when OK
     if (response.statusCode != 200) {
-      throw new ClientException(
-          response.statusCode, response.reasonPhrase ??'', response.headers, body);
+      throw new ClientException(response.statusCode,
+          response.reasonPhrase ?? '', response.headers, body);
     }
     String? etag = response.headers['etag'];
     return etag;
@@ -201,5 +310,45 @@ class Bucket extends Client {
     }
     return signRequest(request,
         contentSha256: contentSha256, expires: expires, preSignedUrl: true);
+  }
+
+  Future<bool> delete(String key,
+      {int? contentLength,
+      String? contentType,
+      Digest? contentSha256,
+      Permissions permissions = Permissions.private,
+      int expires = 900,
+      Map<String, String>? meta}) async {
+    String uriStr = endpointUrl + '/' + key;
+    Uri uriBase = Uri.parse(uriStr);
+    Map<String, String> queryParameters = new Map<String, String>();
+
+    if (meta != null) {
+      for (MapEntry<String, String> me in meta.entries) {
+        queryParameters["x-amz-meta-${me.key}"] = me.value;
+      }
+    }
+    /*if (permissions == Permissions.public) {
+      queryParameters['x-amz-acl'] = 'public-read';
+    }*/ // This isn't working ?!
+    http.Request request = new http.Request(
+        'DELETE', uriBase.replace(queryParameters: queryParameters));
+    if (contentLength != null)
+      request.headers['Content-Length'] = contentLength.toString();
+    if (contentType != null) request.headers['Content-Type'] = contentType;
+    if (permissions == Permissions.public) {
+      request.headers['x-amz-acl'] = 'public-read';
+    }
+    signRequest(request, contentSha256: contentSha256);
+
+    http.StreamedResponse response = await httpClient.send(request);
+    String body =
+        await utf8.decodeStream(response.stream); // Should be empty when OK
+    if (!(response.statusCode >= 200 && response.statusCode < 300)) {
+      throw new ClientException(response.statusCode,
+          response.reasonPhrase ?? '', response.headers, body);
+    }
+
+    return (response.statusCode >= 200 && response.statusCode < 300);
   }
 }
