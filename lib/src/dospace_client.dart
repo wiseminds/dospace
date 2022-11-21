@@ -3,7 +3,8 @@ import 'dart:convert';
 import 'package:meta/meta.dart';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
-import 'package:xml/xml.dart' as xml;
+import 'package:xml/xml.dart';
+// import 'package:xml/xml.dart' as xml;
 
 class ClientException implements Exception {
   final int statusCode;
@@ -47,7 +48,7 @@ class Client {
   }
 
   @protected
-  Future<xml.XmlDocument> getUri(Uri uri) async {
+  Future<XmlDocument> getUri(Uri uri) async {
     http.Request request = new http.Request('GET', uri);
     signRequest(request);
     http.StreamedResponse response = await httpClient.send(request);
@@ -56,7 +57,7 @@ class Client {
       throw new ClientException(
           response.statusCode, response.reasonPhrase ??'', response.headers, body);
     }
-    xml.XmlDocument doc = xml.parse(body);
+    XmlDocument doc = XmlDocument.parse(body);
     return doc;
   }
 
